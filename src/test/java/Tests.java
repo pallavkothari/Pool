@@ -1,4 +1,3 @@
-import com.google.common.base.Supplier;
 import com.google.common.collect.Lists;
 import org.junit.Test;
 
@@ -17,10 +16,10 @@ public class Tests {
     @Test
     public void testPool() {
         AtomicInteger intGenerator = new AtomicInteger(0);
-        Pool<Integer> integerPool = Pool.create(intGenerator::getAndIncrement, 10);
+        Pool<Integer> integerPool = new Pool<Integer>(intGenerator::getAndIncrement, 10);
         assertThat(intGenerator.get(), is(0));     // because the pool items are lazily constructed
 
-        List<Pool.BorrowedItem> borrowed = Lists.newArrayListWithCapacity(10);
+        List<Pool.BorrowedItem<Integer>> borrowed = Lists.newArrayListWithCapacity(10);
         for (int j = 0; j < 10; j++) {
             Pool.BorrowedItem<Integer> borrowedItem = integerPool.checkout();
             borrowed.add(borrowedItem);
@@ -30,7 +29,7 @@ public class Tests {
         assertThat(integerPool.available(), is(0));
         assertThat(intGenerator.get(), is(10));
 
-        for (Pool.BorrowedItem borrowedItem : borrowed) {
+        for (Pool.BorrowedItem<Integer> borrowedItem : borrowed) {
             borrowedItem.returnToPool();
         }
         assertThat(integerPool.available(), is(10));
@@ -52,6 +51,21 @@ public class Tests {
 
         assertThat(integerPool.available(), is(10));
         assertThat(intGenerator.get(), is(10));
+    }
+
+    @Test
+    public void testDiscard() {
+        AtomicInteger intGenerator = new AtomicInteger(0);
+        Pool<Integer> pool = new Pool<Integer>(intGenerator::getAndIncrement, 1);
+        Pool.BorrowedItem<Integer> item = pool.checkout();
+        item.get();
+        assertThat(intGenerator.get(), is(1));
+        item.discard();
+        item.returnToPool();
+        assertThat(pool.available(), is(1));
+        assertThat(intGenerator.get(), is(1));     // because nobody has used the new item yet
+        assertThat(pool.checkout().get(), is(1));
+        assertThat(intGenerator.get(), is(2));     // a new item was generated beyond the capacity of the pool
     }
 
 }

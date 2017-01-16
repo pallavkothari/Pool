@@ -1,37 +1,48 @@
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 
-import java.util.concurrent.*;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 /**
  * A way to create a simple (inelastic) pool of expensive resources.
  * The assumption is that the pooled items are not safe to share between
  * threads, so at most one thread is allowed to checkout an item at a time.
- * Note that the threads must #returnToPool, as this pool does not auto-replenish.
- * Oh, and {@link #checkout()} blocks-- badly behaving apps beware.
  *
+ * <p/>
+ * Note that calling threads ought to {@link #checkout()} in a <code>try-with-resources</code>,
+ * or call {@link BorrowedItem#returnToPool()}, as this pool does not auto-replenish,
+ * unless you explicitly call {@link BorrowedItem#discard()}
+ *
+ * <p/>
  * Created by pallav on 10/30/16.
  *
  */
 public class Pool<T> {
 
+    private final Supplier<T> generator;
     private final BlockingQueue<Supplier<T>> pool;
 
     /**
+     * This assumes that generator will generate distinct objects,
+     * which are cached with no expiration or health checks.
      *
-     * @param supplier called exactly #poolSize times.
+     * Note that {@link Supplier#get()} is invoked lazily, once you call {@link BorrowedItem#get()}
+     *
+     * @param generator called #poolSize times, or when/if you call {@link BorrowedItem#discard()}
      * @param poolSize the capacity of this pool
      */
-    public static <T> Pool<T> create(Supplier<T> supplier, int poolSize) {
-        Pool<T> pool = new Pool<>(poolSize);
+    public Pool(Supplier<T> generator, int poolSize) {
+        this.generator = generator;
+        this.pool = new LinkedBlockingQueue<>(poolSize);
+
         for (int i = 0; i < poolSize; i++) {
-            pool.pool.offer(Suppliers.memoize(supplier));
+            pool.offer(newPoolItem());
         }
-        return pool;
     }
 
-    private Pool(int poolSize) {
-        pool = new LinkedBlockingQueue<>(poolSize);
+    private Supplier<T> newPoolItem() {
+        return Suppliers.memoize(generator);
     }
 
     /**
@@ -68,10 +79,14 @@ public class Pool<T> {
     /**
      * It's critical to call {@link #returnToPool()}, or just call
      * {@link #checkout()} from within a try-with-resources block.
+     *
+     * <p/> If you ain't happy with this item, {@link #discard()} it
+     * and the pool will be replenished.
      */
     public static final class BorrowedItem<T> implements AutoCloseable {
         private final Pool<T> pool;
         private final Supplier<T> supplier;
+        private boolean isDiscarded;
 
         private BorrowedItem(Pool<T> pool, Supplier<T> supplier) {
             this.pool = pool;
@@ -82,13 +97,17 @@ public class Pool<T> {
             return supplier.get();
         }
 
+        public void discard() {
+            this.isDiscarded = true;
+        }
+
         @Override
         public void close() {
             returnToPool();
         }
 
         public void returnToPool() {
-            this.pool.returnToPool(this.supplier);
+            this.pool.returnToPool(isDiscarded ? pool.newPoolItem() : this.supplier);
         }
 
     }
